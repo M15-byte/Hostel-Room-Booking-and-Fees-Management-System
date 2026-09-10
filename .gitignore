@@ -1,0 +1,11 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+
+# Editor / IDE folders
+.vscode/
+.idea/
+
+# Runtime data files (uncomment to keep test data out of the repo)
+# hostel_data.json
+# activity_log.json
