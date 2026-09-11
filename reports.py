@@ -7,44 +7,47 @@ building's occupancy at a glance, and listing who still owes money.
 """
 
 from typing import List
+
 from models import Student
-from students import StudentRegistry
-from hostel import HostelLayout
+from hostel import HostelLayout, resolve_block_name
+from students import StudentRegistry, normalize_reg_no
 
 
-def search_student(students: StudentRegistry, keyword: str) -> List[Student]:
-    """
-    Tries an exact registration-number match first, since that's the
-    fastest and most precise lookup available (a direct dict access).
-    Only falls back to a partial name search if that lookup misses,
-    so a search for a reg number that also happens to look like a name
-    substring still resolves to the exact student.
-    """
-    exact_match = students.get(keyword)
+# Searches by registration number first, then by partial name.
+def search_student(
+    students: StudentRegistry,
+    keyword: str,
+) -> List[Student]:
+    search_text = keyword.strip()
+    if not search_text:
+        return []
+
+    exact_match = students.get(normalize_reg_no(search_text))
     if exact_match is not None:
         return [exact_match]
 
-    keyword_lower = keyword.strip().lower()
-    return [s for s in students.values() if keyword_lower in s.name.lower()]
+    keyword_lower = search_text.casefold()
+    return [
+        student
+        for student in students.values()
+        if keyword_lower in student.name.casefold()
+    ]
 
 
-def occupancy_report(layout: HostelLayout, block_filter: str = "") -> None:
-    """
-    Prints the occupancy report, optionally narrowed to one block.
-
-    block_filter being empty shows everything, same as before. A
-    non-empty filter that doesn't match any real block name prints a
-    clear message and returns - it does not fail silently, and it does
-    not fall back to showing the full report, which would be confusing
-    after someone deliberately asked to search for one block.
-    """
+# Prints all blocks or one selected block.
+def occupancy_report(
+    layout: HostelLayout,
+    block_filter: str = "",
+) -> None:
     print("\n========== HOSTEL OCCUPANCY REPORT ==========")
 
-    if block_filter:
-        if block_filter not in layout:
-            print(f"\nNo block named '{block_filter}' was found.")
+    if block_filter.strip():
+        canonical_block = resolve_block_name(layout, block_filter)
+        if canonical_block is None:
+            print(f"\nNo block named '{block_filter.strip()}' was found.")
+            print(f"Available blocks: {', '.join(layout.keys())}")
             return
-        blocks_to_show = {block_filter: layout[block_filter]}
+        blocks_to_show = {canonical_block: layout[canonical_block]}
     else:
         blocks_to_show = layout
 
@@ -54,18 +57,26 @@ def occupancy_report(layout: HostelLayout, block_filter: str = "") -> None:
             print(f"{room_no}: {room.occupancy_label()}")
 
 
-def fee_defaulters(students: StudentRegistry, threshold: float) -> None:
-    """Lists every student whose outstanding balance meets or exceeds
-    the given threshold, sorted highest balance first so the biggest
-    outstanding amounts are the first thing the warden sees."""
+# Lists students whose balance is above the given threshold.
+def fee_defaulters(
+    students: StudentRegistry,
+    threshold: float,
+) -> None:
     print("\n========== FEE DEFAULTERS ==========\n")
 
-    defaulters = [s for s in students.values() if s.balance >= threshold]
-    defaulters.sort(key=lambda s: s.balance, reverse=True)
+    defaulters = [
+        student
+        for student in students.values()
+        if student.balance > threshold
+    ]
+    defaulters.sort(key=lambda student: student.balance, reverse=True)
 
     if not defaulters:
-        print("No students at or above this threshold.")
+        print("No students above this threshold.")
         return
 
     for student in defaulters:
-        print(f"{student.name:<15} {student.reg_no:<12} Outstanding: ${student.balance}")
+        print(
+            f"{student.name:<20} {student.reg_no:<15} "
+            f"Outstanding: ${student.balance:.2f}"
+        )
