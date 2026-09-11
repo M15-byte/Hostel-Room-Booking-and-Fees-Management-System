@@ -1,14 +1,9 @@
+
 """
-activity_log.py
-
-Keeps a permanent, append-only history of what happens in the system:
-every registration, every allocation, every payment, and every save.
-
-This is deliberately a separate file from hostel_data.json. That file
-only ever holds the *current* state and gets overwritten completely on
-every save - it can't tell you what changed or when. This file never
-gets overwritten, only appended to, so opening it later shows the full
-timeline of everything that's happened since the system went live.
+Keeps a permanent record of important system activities.
+The log is appended to instead of being overwritten, so it keeps
+a timeline of events such as registrations, allocations, payments,
+and saves.
 """
 
 import json
@@ -19,18 +14,11 @@ from typing import List, Dict
 LOG_FILE = Path(__file__).resolve().parent / "activity_log.json"
 
 
+# Load existing activity records
 def _load_log() -> List[Dict]:
-    """
-    Reads the existing log so a new entry can be appended to it.
-
-    A missing file just means nothing has been logged yet. A corrupted
-    file is handled the same way it is everywhere else in this project:
-    reported, then treated as empty rather than crashing the program -
-    losing old history to a bad write is unfortunate, but it should
-    never stop new history from being recorded.
-    """
     if not LOG_FILE.exists():
         return []
+
     try:
         with LOG_FILE.open("r") as file:
             return json.load(file)
@@ -39,22 +27,17 @@ def _load_log() -> List[Dict]:
         return []
 
 
+# Add a new event to the activity history
 def log_event(event_type: str, description: str) -> None:
-    """
-    Records one line of history: what kind of event it was, a plain
-    description of what happened, and exactly when.
-
-    Called from main.py right after an action succeeds, never from
-    inside hostel.py / students.py / fees.py themselves - those modules
-    only handle the business rules and shouldn't need to know that
-    logging to disk even exists. Keeping that decision in main.py means
-    the core modules stay easy to test without touching the filesystem.
-    """
     entries = _load_log()
+
+    # Create a timestamped activity record
     entries.append({
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "event": event_type,
         "details": description,
     })
+
+    # Save the updated activity history
     with LOG_FILE.open("w") as file:
         json.dump(entries, file, indent=4)
