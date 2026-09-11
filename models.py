@@ -12,50 +12,39 @@ instead of being stored separately.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 
+# Stores one fee payment.
 @dataclass
 class Payment:
-    """A single fee payment made by a student, timestamped when it happened."""
     amount: float
-    date: str  # stored as an ISO date string (YYYY-MM-DD) so it serializes to JSON cleanly
+    date: str
 
 
+# Stores a room and its occupants.
 @dataclass
 class Room:
-    """
-    A single room inside a hostel block.
-
-    capacity has no default value on purpose: every room in this system
-    is created from information the warden actually enters at setup time,
-    never from an assumed number, so there is nothing here to fall back on.
-    """
     capacity: int
-    occupants: List[str] = field(default_factory=list)  # list of registration numbers
+    occupants: List[str] = field(default_factory=list)
 
+    # Returns True when all beds are occupied.
     def is_full(self) -> bool:
-        """A room is full once its occupant count reaches its capacity."""
         return len(self.occupants) >= self.capacity
 
+    # Returns True when the room has a free bed.
     def has_space(self) -> bool:
         return not self.is_full()
 
+    # Returns the room occupancy in a readable format.
     def occupancy_label(self) -> str:
-        """Human-readable 'x/y - STATUS' string used in every report/listing."""
         status = "FULL" if self.is_full() else "AVAILABLE"
         return f"{len(self.occupants)}/{self.capacity} - {status}"
 
 
+# Stores a student's hostel and fee details.
 @dataclass
 class Student:
-    """
-    A single registered student and everything tied to their hostel stay.
-
-    total_fee is supplied per student at registration time rather than
-    assumed to be some fixed amount, since real hostels charge different
-    students differently (by course, by room type, by year of study, etc).
-    """
     name: str
     reg_no: str
     gender: str
@@ -67,12 +56,13 @@ class Student:
     amount_paid: float = 0.0
     payments: List[Payment] = field(default_factory=list)
 
+    # Calculates the current outstanding balance.
     @property
     def balance(self) -> float:
-        """Outstanding balance, always derived from total_fee and amount_paid
-        rather than stored on its own, so the two numbers can never disagree."""
         return round(self.total_fee - self.amount_paid, 2)
 
+    # Checks whether the student has a room.
     @property
     def is_allocated(self) -> bool:
-        return bool(self.block) and bool(self.room)
+        return bool(self.block and self.room)
+
