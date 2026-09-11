@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 
+
 # Editor / IDE folders
 .vscode/
 .idea/
