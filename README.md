@@ -8,6 +8,13 @@ can owe different amounts. A warden whose building looks different can
 define a custom layout through menu option 10 before any students are
 registered.
 
+## Default hostel
+
+- Block A: A01-A05, 4 beds per room
+- Block B: B01-B05, 4 beds per room
+- Block C: C01-C05, 3 beds per room
+- Total: 3 blocks, 15 rooms and 55 beds
+
 ## Running
 
     python3 main.py
