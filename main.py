@@ -3,47 +3,51 @@ main.py
 
 Entry point for the Hostel Room Booking System.
 
-Responsible for exactly two things: getting the program into a valid
+Responsible for getting the program into a valid
 starting state (either loaded from disk or freshly configured), and then
 running the menu loop that routes each choice to the module that
-actually knows how to handle it. It never manipulates hostel or student
-data directly - that would defeat the point of splitting the system
-into separate modules in the first place.
-
-main.py is also the only place that writes to the activity log. Keeping
+actually knows how to handle it. 
+main.py also writes to the activity log. Keeping
 that decision here, instead of inside hostel.py / students.py / fees.py,
 means those modules stay pure business logic - they report success or
 failure, and it's main.py's job to decide what's worth recording.
 """
 
-import json
+import math
 
+from activity_log import log_event
+from fees import display_payment_history, record_payment
+from file_manager import (
+    DATA_FILE,
+    DataFileError,
+    data_file_exists,
+    load_data,
+    save_data,
+)
 from hostel import (
+    HostelLayout,
     build_hostel_layout,
     create_default_layout,
     display_occupancy,
     total_capacity,
     total_occupied,
-    HostelLayout,
 )
+from reports import fee_defaulters, occupancy_report, search_student
 from students import (
     StudentRegistry,
-    register_student,
     allocate_room,
-    find_by_registration,
     display_student,
+    find_by_registration,
+    register_student,
 )
-from fees import record_payment, display_payment_history
-from reports import search_student, occupancy_report, fee_defaulters
-from file_manager import load_data, save_data, data_file_exists
-from activity_log import log_event
 
 
+# Menu displayed after each operation.
 MENU_TEXT = """
 ========================================
      HOSTEL ROOM BOOKING SYSTEM
 ========================================
-1. Register Student 
+1. Register Student (includes Room Allocation)
 2. Allocate / Transfer Room
 3. Record Fee Payment
 4. Search Student
@@ -56,27 +60,32 @@ MENU_TEXT = """
 """
 
 
-def ask_float(prompt: str) -> float:
-    """Loops until the user enters a number that isn't negative - used
-    for both fee totals and payment amounts, which share this exact
-    rule even though they mean different things."""
+# Repeats a prompt until a valid money amount is entered.
+def ask_amount(prompt: str, allow_zero: bool = False) -> float:
     while True:
         raw_value = input(prompt).strip()
+
         try:
             value = float(raw_value)
         except ValueError:
             print("Please enter a valid number.")
             continue
+
+        if not math.isfinite(value):
+            print("Please enter a valid number.")
+            continue
         if value < 0:
             print("The amount cannot be negative.")
             continue
-        return value
+        if value == 0 and not allow_zero:
+            print("The amount must be greater than zero.")
+            continue
+
+        return round(value, 2)
 
 
+# Repeats a prompt until text is entered.
 def ask_nonempty(prompt: str) -> str:
-    """Re-prompts until something non-blank is entered - used for the
-    free-text student details (gender, course, year) so a record can't
-    be created with those fields silently left empty."""
     while True:
         value = input(prompt).strip()
         if value:
@@ -84,19 +93,19 @@ def ask_nonempty(prompt: str) -> str:
         print("This field cannot be empty.")
 
 
-def start_up() -> tuple[HostelLayout, StudentRegistry]:
-    """
-    Gets the program into a usable state before the menu ever appears.
+# Repeats a prompt until y or n is entered.
+def ask_yes_no(prompt: str) -> bool:
+    while True:
+        answer = input(prompt).strip().casefold()
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("Please enter y or n.")
 
-    Three distinct situations are handled on purpose rather than being
-    collapsed into one generic 'try to load, otherwise start empty':
-    no file yet (first run), a file that loads cleanly, and a file that
-    exists but can't be parsed. Each one gets its own message so whoever
-    is running the program knows exactly what happened. On a first run -
-    or after a damaged file - the predefined default hostel (three
-    blocks, 55 beds) is loaded, so the warden never has to answer setup
-    questions before the system is usable.
-    """
+
+# Loads saved data or creates the default hostel.
+def start_up() -> tuple[HostelLayout, StudentRegistry]:
     if not data_file_exists():
         print("No saved data file found - this looks like a first run.")
         print("Loading the predefined default hostel: 3 blocks, 55 beds.")
@@ -104,200 +113,228 @@ def start_up() -> tuple[HostelLayout, StudentRegistry]:
 
     try:
         return load_data()
-    except json.JSONDecodeError:
-        print("Starting fresh with the default hostel instead, since the")
-        print("existing data file can't be used.")
-        return create_default_layout(), {}
+    except FileNotFoundError:
+        print("The saved data file disappeared before it could be opened.")
+    except DataFileError as error:
+        print(f"Warning: the saved data file is damaged: {error}")
+
+    print("Starting with the predefined default hostel instead.")
+    return create_default_layout(), {}
 
 
-def handle_register_and_allocate(students: StudentRegistry, layout: HostelLayout) -> None:
-    """
-    Registers a new student and assigns their room in one continuous
-    step, instead of making the warden pick 'Register' and then come
-    back to a separate 'Allocate' menu option for every single student.
-
-    If the room step fails (full room, room that doesn't exist), the
-    student is still registered - they just aren't given a room yet.
-    That's a deliberate choice: refusing the allocation is not a reason
-    to throw away the registration details that were already valid.
-    """
+# Registers a student and asks for the first room allocation.
+def handle_register_and_allocate(
+    students: StudentRegistry,
+    layout: HostelLayout,
+) -> None:
     print("\n-- Register Student --")
-    name = input("Student name: ")
-    reg_no = input("Registration number: ")
+    name = ask_nonempty("Student name: ")
+    reg_no = ask_nonempty("Registration number: ")
     gender = ask_nonempty("Gender: ")
     course = ask_nonempty("Course: ")
     year = ask_nonempty("Year of study: ")
-    total_fee = ask_float("Total hostel fee for this student: $")
+    total_fee = ask_amount("Total hostel fee for this student: $")
 
-    registered = register_student(students, name, reg_no, gender, course, year, total_fee)
+    registered = register_student(
+        students,
+        name,
+        reg_no,
+        gender,
+        course,
+        year,
+        total_fee,
+    )
     if not registered:
-        return  # register_student() already printed the specific reason
+        return
 
-    log_event("registration", f"{name} ({reg_no}) registered with total fee ${total_fee}")
+    student = find_by_registration(students, reg_no)
+    if student is None:
+        return
+
+    log_event(
+        "registration",
+        f"{student.name} ({student.reg_no}) registered with fee ${student.total_fee:.2f}",
+    )
 
     print("\nNow assign a room for this student.")
-    block = input("Block: ")
-    room_no = input("Room number: ")
+    block = ask_nonempty("Block (e.g. A or Block A): ")
+    room_no = ask_nonempty("Room number (e.g. 1, 01 or A01): ")
 
-    allocated = allocate_room(students, layout, reg_no, block, room_no)
-    if allocated:
-        log_event("allocation", f"{name} ({reg_no}) allocated to {block} - Room {room_no}")
+    if allocate_room(students, layout, student.reg_no, block, room_no):
+        log_event(
+            "allocation",
+            f"{student.name} ({student.reg_no}) allocated to "
+            f"{student.block} - Room {student.room}",
+        )
     else:
         print("The student is registered but has not been assigned a room.")
-        print("Use option 2, 'Allocate / Transfer Room', once a room is available.")
+        print("Use option 2 to allocate a room later.")
 
 
-def handle_allocate(students: StudentRegistry, layout: HostelLayout) -> None:
-    """Handles room allocation on its own - for a student who was
-    registered but couldn't be placed at the time, or for moving an
-    already-housed student to a different room."""
+# Allocates or transfers an existing student.
+def handle_allocate(
+    students: StudentRegistry,
+    layout: HostelLayout,
+) -> None:
     print("\n-- Allocate / Transfer Room --")
-    reg_no = input("Registration number: ")
-    block = input("Block: ")
-    room_no = input("Room number: ")
+    reg_no = ask_nonempty("Registration number: ")
+    block = ask_nonempty("Block (e.g. A or Block A): ")
+    room_no = ask_nonempty("Room number (e.g. 1, 01 or A01): ")
 
-    allocated = allocate_room(students, layout, reg_no, block, room_no)
-    if allocated:
-        log_event("allocation", f"{reg_no} allocated to {block} - Room {room_no}")
+    if allocate_room(students, layout, reg_no, block, room_no):
+        student = find_by_registration(students, reg_no)
+        if student is None:
+            return
+
+        log_event(
+            "allocation",
+            f"{student.reg_no} allocated to {student.block} - Room {student.room}",
+        )
 
 
+# Records a fee payment for one student.
 def handle_payment(students: StudentRegistry) -> None:
     print("\n-- Record Fee Payment --")
-    reg_no = input("Registration number: ")
+    reg_no = ask_nonempty("Registration number: ")
     student = find_by_registration(students, reg_no)
+
     if student is None:
         print("No student found with that registration number.")
         return
-    amount = ask_float("Payment amount: $")
 
-    paid = record_payment(student, amount)
-    if paid:
-        log_event("payment", f"${amount} paid by {student.name} ({reg_no}); balance now ${student.balance}")
+    amount = ask_amount("Payment amount: $")
+    if record_payment(student, amount):
+        log_event(
+            "payment",
+            f"${amount:.2f} paid by {student.name} ({student.reg_no}); "
+            f"balance ${student.balance:.2f}",
+        )
 
 
+# Searches for students by name or registration number.
 def handle_search(students: StudentRegistry) -> None:
     print("\n-- Search Student --")
-    keyword = input("Enter a name or registration number: ")
+    keyword = ask_nonempty("Enter a name or registration number: ")
     results = search_student(students, keyword)
+
     if not results:
         print("No matching student found.")
         return
+
     for student in results:
         display_student(student)
 
 
+# Displays all blocks or one selected block.
 def handle_occupancy_report(layout: HostelLayout) -> None:
-    """
-    Shows the occupancy report, with an optional search built in: press
-    Enter to see every block, or type one block name to jump straight
-    to it. A block name that doesn't exist gets a clear message instead
-    of the screen just doing nothing, which was the actual bug being
-    fixed here.
-    """
     print("\n-- View Occupancy Report --")
-    block_filter = input("Enter a block name to search, or press Enter to view all blocks: ").strip()
+    block_filter = input(
+        "Enter a block name, or press Enter to view all blocks: "
+    ).strip()
     occupancy_report(layout, block_filter)
 
 
+# Displays students whose balances are above a threshold.
 def handle_defaulters(students: StudentRegistry) -> None:
     print("\n-- Fee Defaulters --")
-    threshold = ask_float("Outstanding balance threshold: $")
+    threshold = ask_amount(
+        "Outstanding balance threshold: $",
+        allow_zero=True,
+    )
     fee_defaulters(students, threshold)
 
 
+# Displays full details and payment history for matching students.
 def handle_view_student(students: StudentRegistry) -> None:
-    """
-    Shows full details and payment history for one or more students.
-
-    This now goes through the same search_student() function used by
-    option 4, so typing a partial name works here too, not just an
-    exact registration number. Previously this only matched an exact
-    reg_no and stayed silent on anything else - that silence is what
-    looked like the feature "not working."
-    """
     print("\n-- View Student Details --")
-    keyword = input("Enter a name or registration number: ")
+    keyword = ask_nonempty("Enter a name or registration number: ")
     results = search_student(students, keyword)
+
     if not results:
         print("No matching student found.")
         return
+
     for student in results:
         display_student(student)
         display_payment_history(student)
 
 
-def handle_save(layout: HostelLayout, students: StudentRegistry) -> None:
-    save_data(layout, students)
-    occupied = total_occupied(layout)
-    capacity = total_capacity(layout)
-    log_event("save", f"Data saved - {len(students)} student(s) on record, {occupied}/{capacity} beds occupied")
+# Saves data and writes a save event to the activity log.
+def handle_save(
+    layout: HostelLayout,
+    students: StudentRegistry,
+) -> bool:
+    if not save_data(layout, students):
+        return False
+
+    log_event(
+        "save",
+        f"{len(students)} student(s), "
+        f"{total_occupied(layout)}/{total_capacity(layout)} beds occupied",
+    )
+    return True
 
 
-def handle_custom_layout(students: StudentRegistry, layout: HostelLayout) -> None:
-    """
-    Replaces the predefined default layout with one the user defines.
-
-    Only offered while no students are registered, on purpose: once
-    someone has a room, replacing the layout would leave their record
-    pointing at a room that no longer exists. When students already
-    exist, the option explains this instead of letting the warden break
-    the data.
-    """
+# Replaces the default layout before students are registered.
+def handle_custom_layout(
+    students: StudentRegistry,
+    layout: HostelLayout,
+) -> None:
     print("\n-- Set Up Custom Hostel Layout --")
+
     if students:
-        print("This option is only available while no students are registered.")
-        print("Replacing the layout now would leave existing room allocations")
-        print("pointing at rooms that no longer exist. To start over, delete")
-        print("or rename hostel_data.json and run the program again.")
+        print("This option is only available when no students are registered.")
+        print(f"To start again, remove or rename: {DATA_FILE.name}")
         return
 
     new_layout = build_hostel_layout()
     layout.clear()
     layout.update(new_layout)
-    log_event("setup", f"Custom hostel layout created with {total_capacity(layout)} beds")
+    log_event(
+        "setup",
+        f"Custom layout created with {total_capacity(layout)} beds",
+    )
     display_occupancy(layout)
 
 
-# Maps each menu choice to the handler that deals with it. Keeping this
-# as data (a dict) rather than a long if/elif chain means adding a tenth
-# menu option later is one new entry here, not a new branch buried in a
-# growing chain of elifs.
-def build_menu_actions(layout: HostelLayout, students: StudentRegistry):
-    return {
-        "1": lambda: handle_register_and_allocate(students, layout),
-        "2": lambda: handle_allocate(students, layout),
-        "3": lambda: handle_payment(students),
-        "4": lambda: handle_search(students),
-        "5": lambda: handle_occupancy_report(layout),
-        "6": lambda: handle_defaulters(students),
-        "7": lambda: handle_view_student(students),
-        "8": lambda: handle_save(layout, students),
-        "10": lambda: handle_custom_layout(students, layout),
-    }
-
-
+# Runs the validated menu until the user exits.
 def main() -> None:
     layout, students = start_up()
     display_occupancy(layout)
-
-    menu_actions = build_menu_actions(layout, students)
 
     while True:
         print(MENU_TEXT)
         choice = input("Enter your choice: ").strip()
 
-        if choice == "9":
+        if choice == "1":
+            handle_register_and_allocate(students, layout)
+        elif choice == "2":
+            handle_allocate(students, layout)
+        elif choice == "3":
+            handle_payment(students)
+        elif choice == "4":
+            handle_search(students)
+        elif choice == "5":
+            handle_occupancy_report(layout)
+        elif choice == "6":
+            handle_defaulters(students)
+        elif choice == "7":
+            handle_view_student(students)
+        elif choice == "8":
             handle_save(layout, students)
-            print("Goodbye!")
-            break
-
-        action = menu_actions.get(choice)
-        if action is None:
+        elif choice == "9":
+            if handle_save(layout, students):
+                print("Goodbye!")
+                break
+            if ask_yes_no("Exit without saving? (y/n): "):
+                print("Goodbye!")
+                break
+        elif choice == "10":
+            handle_custom_layout(students, layout)
+        else:
             print("Invalid choice. Please enter a number from 1 to 10.")
-            continue
-
-        action()
 
 
+# Starts the program when this file is run directly.
 if __name__ == "__main__":
     main()
