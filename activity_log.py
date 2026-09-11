@@ -1,43 +1,42 @@
-
-"""
-Keeps a permanent record of important system activities.
-The log is appended to instead of being overwritten, so it keeps
-a timeline of events such as registrations, allocations, payments,
-and saves.
-"""
-
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
+
+# The activity log is stored next to the program files.
 LOG_FILE = Path(__file__).resolve().parent / "activity_log.json"
 
 
-# Load existing activity records
+# Loads existing log entries or returns an empty list.
 def _load_log() -> List[Dict]:
     if not LOG_FILE.exists():
         return []
 
     try:
-        with LOG_FILE.open("r") as file:
-            return json.load(file)
-    except json.JSONDecodeError:
-        print("Warning: the activity log file is unreadable - starting a new one.")
+        with LOG_FILE.open("r", encoding="utf-8") as file:
+            entries = json.load(file)
+        if not isinstance(entries, list):
+            raise ValueError
+        return entries
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        print("Warning: the activity log is unreadable. A new log will be used.")
         return []
 
 
-# Add a new event to the activity history
+# Adds one event to the activity log.
 def log_event(event_type: str, description: str) -> None:
     entries = _load_log()
+    entries.append(
+        {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "event": event_type,
+            "details": description,
+        }
+    )
 
-    # Create a timestamped activity record
-    entries.append({
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "event": event_type,
-        "details": description,
-    })
-
-    # Save the updated activity history
-    with LOG_FILE.open("w") as file:
-        json.dump(entries, file, indent=4)
+    try:
+        with LOG_FILE.open("w", encoding="utf-8") as file:
+            json.dump(entries, file, indent=4)
+    except OSError as error:
+        print(f"Warning: activity could not be logged: {error}")
